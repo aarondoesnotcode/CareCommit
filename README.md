@@ -1,0 +1,2 @@
+# CareCommit
+Hackathon Project @ Cursor
