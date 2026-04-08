@@ -1,181 +1,271 @@
+"""CareCommit Streamlit UI — all logic lives in backend.py."""
+
 from __future__ import annotations
 
+import json
 import os
-import re
 
-import requests
 import streamlit as st
 
-
-BASE_URL = "http://localhost:8000"
-LAYER_TECHNICAL = f"{BASE_URL}/layer_technical"
-LAYER_ENTERPRISE = f"{BASE_URL}/layer_enterprise"
-
-GITHUB_API = "https://api.github.com"
-MAX_DIFF_CHARS = 450_000
+from backend import fetch_recent_commits, parse_github_url, run_pipeline
 
 st.set_page_config(page_title="CareCommit", page_icon="🛡️")
 
-if "technical_result" not in st.session_state:
-    st.session_state.technical_result = None
-if "enterprise_result" not in st.session_state:
-    st.session_state.enterprise_result = None
-if "technical_payload" not in st.session_state:
-    st.session_state.technical_payload = None
+
+st.markdown(
+    """
+    <style>
+      :root {
+        --cc-surface: rgba(255, 255, 255, 0.05);
+        --cc-surface-strong: rgba(255, 255, 255, 0.08);
+        --cc-border: rgba(255, 255, 255, 0.14);
+        --cc-text-muted: rgba(250, 250, 250, 0.78);
+      }
+
+      .block-container {
+        padding-top: 1.75rem !important;
+        max-width: 980px;
+      }
+
+      [data-testid="stAppViewContainer"] {
+        background:
+          radial-gradient(1200px 700px at -10% -20%, rgba(59, 130, 246, 0.25), transparent 55%),
+          radial-gradient(900px 600px at 110% -10%, rgba(14, 165, 233, 0.18), transparent 52%),
+          linear-gradient(180deg, #0b1220 0%, #0a1020 42%, #070c18 100%);
+      }
+
+      [data-testid="stAppViewContainer"]::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.32;
+        background:
+          radial-gradient(circle at 18% 24%, rgba(96, 165, 250, 0.55) 0 2px, transparent 3px),
+          radial-gradient(circle at 39% 16%, rgba(56, 189, 248, 0.45) 0 2px, transparent 3px),
+          radial-gradient(circle at 72% 22%, rgba(125, 211, 252, 0.5) 0 2px, transparent 3px),
+          radial-gradient(circle at 84% 35%, rgba(59, 130, 246, 0.4) 0 2px, transparent 3px),
+          radial-gradient(circle at 29% 71%, rgba(14, 165, 233, 0.45) 0 2px, transparent 3px),
+          radial-gradient(circle at 66% 78%, rgba(56, 189, 248, 0.5) 0 2px, transparent 3px),
+          linear-gradient(118deg, transparent 22%, rgba(96, 165, 250, 0.22) 23%, transparent 24%),
+          linear-gradient(36deg, transparent 44%, rgba(56, 189, 248, 0.18) 45%, transparent 46%),
+          linear-gradient(160deg, transparent 66%, rgba(125, 211, 252, 0.14) 67%, transparent 68%);
+      }
+
+      [data-testid="stAppViewContainer"]::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.11;
+        background-image:
+          linear-gradient(rgba(148, 163, 184, 0.35) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(148, 163, 184, 0.35) 1px, transparent 1px);
+        background-size: 44px 44px;
+        mask-image: radial-gradient(circle at 50% 30%, black, transparent 82%);
+        -webkit-mask-image: radial-gradient(circle at 50% 30%, black, transparent 82%);
+      }
+
+      [data-testid="stHeader"] {
+        background: transparent;
+      }
+
+      [data-testid="stSidebar"] > div:first-child {
+        background: linear-gradient(180deg, rgba(17, 24, 39, 0.92), rgba(10, 15, 28, 0.95));
+      }
+
+      .cc-hero {
+        border: 1px solid var(--cc-border);
+        background: linear-gradient(145deg, #1f2937 0%, #111827 52%, #0f172a 100%);
+        border-radius: 18px;
+        padding: 1.2rem 1.3rem;
+        margin-bottom: 1rem;
+      }
+
+      .cc-eyebrow {
+        font-size: 0.8rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #93c5fd;
+        margin-bottom: 0.35rem;
+      }
+
+      .cc-subtle {
+        color: var(--cc-text-muted);
+        margin-top: 0.35rem;
+      }
+
+      .cc-step-title {
+        margin-top: 0.15rem;
+        margin-bottom: 0.35rem;
+      }
+
+      .cc-panel {
+        border: 1px solid var(--cc-border);
+        background: var(--cc-surface);
+        border-radius: 12px;
+        padding: 0.85rem 1rem;
+        margin: 0.65rem 0 0.9rem;
+      }
+
+      .cc-action-wrap {
+        border: 1px solid var(--cc-border);
+        background: rgba(15, 23, 42, 0.42);
+        border-radius: 14px;
+        padding: 0.8rem 0.9rem 0.2rem;
+        margin-top: 0.25rem;
+      }
+
+      .cc-chip {
+        display: inline-block;
+        border: 1px solid var(--cc-border);
+        background: var(--cc-surface-strong);
+        border-radius: 999px;
+        padding: 0.15rem 0.65rem;
+        margin-right: 0.45rem;
+        font-size: 0.8rem;
+      }
+
+      div[data-testid="stMetric"] {
+        border: 1px solid var(--cc-border);
+        background: var(--cc-surface);
+        border-radius: 12px;
+        padding: 0.45rem 0.8rem;
+      }
+
+      div[data-testid="stForm"] {
+        border: 1px solid var(--cc-border);
+        background: rgba(17, 24, 39, 0.35);
+        border-radius: 14px;
+        padding: 0.9rem 1rem 0.2rem;
+      }
+
+      div[data-testid="stRadio"] > label {
+        margin-bottom: 0.4rem;
+      }
+
+      .cc-help {
+        color: var(--cc-text-muted);
+        font-size: 0.92rem;
+        margin-bottom: 0.45rem;
+      }
+
+      div[data-testid="stButton"] button[kind="primary"] {
+        background: linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%);
+        border: 1px solid rgba(147, 197, 253, 0.45);
+        color: #f8fafc;
+        box-shadow: 0 8px 24px rgba(14, 165, 233, 0.28);
+      }
+
+      div[data-testid="stButton"] button[kind="primary"]:hover {
+        border-color: rgba(186, 230, 253, 0.7);
+        box-shadow: 0 10px 28px rgba(37, 99, 235, 0.38);
+        filter: brightness(1.04);
+      }
+
+      div[data-testid="stButton"] button[kind="primary"]:focus {
+        outline: 2px solid rgba(125, 211, 252, 0.8);
+        outline-offset: 1px;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 if "step" not in st.session_state:
     st.session_state.step = 0
-if "review_context" not in st.session_state:
-    st.session_state.review_context = {}
-if "technical_request_done" not in st.session_state:
-    st.session_state.technical_request_done = False
-if "enterprise_request_done" not in st.session_state:
-    st.session_state.enterprise_request_done = False
+if "owner" not in st.session_state:
+    st.session_state.owner = ""
+if "repo" not in st.session_state:
+    st.session_state.repo = ""
+if "ref" not in st.session_state:
+    st.session_state.ref = ""
+if "commits" not in st.session_state:
+    st.session_state.commits = []
+if "pipeline_result" not in st.session_state:
+    st.session_state.pipeline_result = None
+if "last_error" not in st.session_state:
+    st.session_state.last_error = None
 
 
-def reset_guardrail_flow():
+def reset_flow():
     st.session_state.step = 0
-    st.session_state.review_context = {}
-    st.session_state.technical_result = None
-    st.session_state.enterprise_result = None
-    st.session_state.technical_payload = None
-    st.session_state.technical_request_done = False
-    st.session_state.enterprise_request_done = False
+    st.session_state.owner = ""
+    st.session_state.repo = ""
+    st.session_state.ref = ""
+    st.session_state.commits = []
+    st.session_state.pipeline_result = None
+    st.session_state.last_error = None
 
 
-def _secrets_github_token() -> str:
+def _secret(key: str) -> str:
     try:
-        return (st.secrets.get("GITHUB_TOKEN") or "").strip()
+        return (st.secrets.get(key) or "").strip()
     except Exception:
         return ""
 
 
-def parse_github_repo(raw: str) -> tuple[str, str] | None:
-    s = (raw or "").strip().rstrip("/")
-    if not s:
-        return None
-    s = re.sub(r"^git@github\.com:", "https://github.com/", s)
-    if "github.com/" in s:
-        after = s.split("github.com/", 1)[1]
-        parts = after.split("/")
-        if len(parts) < 2:
-            return None
-        owner, repo = parts[0], parts[1]
-        repo = repo.split("/")[0].split("?")[0]
-        if repo.endswith(".git"):
-            repo = repo[:-4]
-        return owner, repo
-    if "/" in s and "://" not in s and "@" not in s:
-        parts = s.split("/")
-        if len(parts) == 2:
-            repo = parts[1]
-            if repo.endswith(".git"):
-                repo = repo[:-4]
-            return parts[0], repo
-    return None
+def _secrets_github_token() -> str:
+    return _secret("GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN", "").strip()
 
 
-def github_headers(token: str) -> dict:
-    h = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    if token:
-        h["Authorization"] = f"Bearer {token}"
-    return h
-
-
-def fetch_recent_commit_diffs(
-    owner: str,
-    repo: str,
-    n: int,
-    token: str,
-    branch: str,
-) -> tuple[str, list[dict]]:
-    headers = github_headers(token)
-    params: dict = {"per_page": min(max(n, 1), 100)}
-    if (branch or "").strip():
-        params["sha"] = branch.strip()
-
-    r = requests.get(
-        f"{GITHUB_API}/repos/{owner}/{repo}/commits",
-        params=params,
-        headers=headers,
-        timeout=45,
-    )
-    r.raise_for_status()
-    commits = r.json()
-    if not commits:
-        raise ValueError("No commits returned for this repo / ref.")
-
-    blocks: list[str] = []
-    meta: list[dict] = []
-    for c in commits[:n]:
-        sha = c["sha"]
-        cr = requests.get(
-            f"{GITHUB_API}/repos/{owner}/{repo}/commits/{sha}",
-            headers=headers,
-            timeout=45,
-        )
-        cr.raise_for_status()
-        data = cr.json()
-        msg = ((data.get("commit") or {}).get("message") or "").strip()
-        msg_one_line = msg.split("\n")[0] if msg else "(no message)"
-        patch_parts: list[str] = []
-        for f in data.get("files") or []:
-            name = f.get("filename") or "unknown"
-            patch = f.get("patch")
-            if patch:
-                patch_parts.append(f"--- {name}\n{patch}")
-            else:
-                status = f.get("status") or "?"
-                patch_parts.append(f"--- {name} ({status}; binary or patch omitted by API)")
-        block = f"### {sha[:7]} — {msg_one_line.rstrip()}\n\n" + "\n\n".join(patch_parts)
-        blocks.append(block)
-        meta.append({"sha": sha, "message": msg_one_line})
-
-    full = "\n\n---\n\n".join(blocks)
-    if len(full) > MAX_DIFF_CHARS:
-        full = (
-            full[:MAX_DIFF_CHARS]
-            + f"\n\n… **[truncated at {MAX_DIFF_CHARS} characters for UI / API limits]**"
-        )
-    return full, meta
+def _secrets_gemini() -> str:
+    return _secret("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY", "").strip()
 
 
 if st.session_state.step == 0:
-    st.title("CareCommit")
-    st.markdown("**Using WhiteCircle & AI to automate your code review** | Hackathon Track:  Review + QA track")
     st.markdown(
         """
-        Breakdown:
-        1. **Connect GitHub** — point at a repo. We pull recent commits and **raw patch text** from the API.
-        2. **Inspect the difference** — review what changed.
-        3. **Technical layer** — checks claims against the diff (logic, APIs, edge cases).
-        4. **Enterprise safety layer** — using WhiteCircle we are able to check for policy fit (PII, secrets, compliance tone, overconfidence).
-
-        **Disclaimer:** This is to be used as a pre-limininary check before human review, to help speed up the process and catch any potential issues. It does not replace human review or formal QA.
+        <div class="cc-hero">
+          <div class="cc-eyebrow">Ship safer code faster</div>
+          <h1 style="margin:0;">CareCommit</h1>
+          <p class="cc-subtle">
+            AI code review for real GitHub commits. Pick a commit and get a structured
+            verdict on bugs, security risks, and quality.
+          </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        ### How it works
+        1. Paste a public repo URL or `owner/repo`.
+        2. Pick a recent commit.
+        3. Read an AI review with score, issues, and suggested fixes.
         """
     )
-    c1, c2 = st.columns(2)
+    st.markdown('<div class="cc-action-wrap">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="cc-help">Start a new review flow, or clear all current session data.</div>',
+        unsafe_allow_html=True,
+    )
+    c1, c2 = st.columns([1.8, 1.2])
     with c1:
-        if st.button("Start", type="primary"):
+        if st.button("Start review", type="primary", use_container_width=True):
             st.session_state.step = 1
             st.rerun()
     with c2:
-        if st.button("Reset session"):
-            reset_guardrail_flow()
+        if st.button("Reset session", use_container_width=True):
+            reset_flow()
             st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 elif st.session_state.step == 1:
-    st.header("1 · Fetch commits from GitHub")
+    st.markdown('<h3 class="cc-step-title">1 · Fetch commits from GitHub</h3>', unsafe_allow_html=True)
+    st.progress(0.33, text="Step 1 of 3")
+    st.markdown(
+        '<div class="cc-panel">Enter a repository and load recent commits for review.</div>',
+        unsafe_allow_html=True,
+    )
     with st.sidebar:
-        st.subheader("GitHub API")
-        default_tok = _secrets_github_token() or os.environ.get("GITHUB_TOKEN", "")
+        st.subheader("Credentials")
+        default_tok = _secrets_github_token()
         token_in = st.text_input(
-            "Token (optional)",
+            "GitHub token (optional)",
             value=default_tok,
             type="password",
-            help="Fine-grained or classic PAT for private repos / 5k hourly rate limit.",
+            help="PAT for private repos or 5k req/hr rate limit.",
             key="gh_token_sidebar",
         )
 
@@ -185,223 +275,179 @@ elif st.session_state.step == 1:
             placeholder="https://github.com/org/repo or org/repo",
         )
         branch_in = st.text_input("Branch or tag (optional)", placeholder="main")
-        n_commits = st.number_input("Recent commits to load", min_value=1, max_value=50, value=5, step=1)
+        n_commits = st.number_input(
+            "Recent commits to load", min_value=1, max_value=50, value=5, step=1
+        )
         submitted = st.form_submit_button("Fetch commits")
 
     if submitted:
-        parsed = parse_github_repo(repo_in)
-        if not parsed:
-            st.error("Could not parse repository. Use `owner/repo` or a full `github.com` URL.")
+        st.session_state.last_error = None
+        try:
+            owner, repo = parse_github_url(repo_in)
+        except ValueError as e:
+            st.error(str(e))
         else:
-            owner, repo = parsed
             token = (token_in or "").strip()
             try:
-                diff_text, meta = fetch_recent_commit_diffs(
-                    owner, repo, int(n_commits), token, branch_in
+                commits = fetch_recent_commits(
+                    owner,
+                    repo,
+                    n=int(n_commits),
+                    github_token=token,
+                    ref=(branch_in or "").strip(),
                 )
-            except requests.HTTPError as e:
-                detail = ""
-                if e.response is not None:
-                    try:
-                        detail = e.response.json().get("message", e.response.text)
-                    except Exception:
-                        detail = e.response.text or str(e)
-                st.error(f"GitHub API error ({e.response.status_code if e.response else '?'}): {detail}")
-            except requests.RequestException as e:
-                st.error(f"Network error: {e}")
-            except ValueError as e:
-                st.error(str(e))
+            except ConnectionError as e:
+                st.error(f"GitHub API error: {e}")
+            except Exception as e:
+                st.error(f"Unexpected error: {e}")
             else:
-                st.session_state.review_context = {
-                    "github_owner": owner,
-                    "github_repo": repo,
-                    "repo_hint": f"{owner}/{repo}",
-                    "commits_meta": meta,
-                    "code_context": diff_text,
-                    "review_text": "",
-                    "language": "Unspecified",
-                    "branch": (branch_in or "").strip(),
-                }
-                st.session_state.technical_request_done = False
-                st.session_state.enterprise_request_done = False
-                st.session_state.technical_payload = None
-                st.session_state.enterprise_result = None
-                st.session_state.step = 2
-                st.rerun()
+                if not commits:
+                    st.warning("No commits returned.")
+                else:
+                    st.session_state.owner = owner
+                    st.session_state.repo = repo
+                    st.session_state.ref = (branch_in or "").strip()
+                    st.session_state.commits = commits
+                    st.session_state.pipeline_result = None
+                    st.session_state.step = 2
+                    st.rerun()
 
     if st.button("← Back"):
         st.session_state.step = 0
         st.rerun()
 
 elif st.session_state.step == 2:
-    st.header("2 · Commit diffs & review input")
-    ctx = st.session_state.review_context
-    owner, repo = ctx.get("github_owner"), ctx.get("github_repo")
-    st.markdown(f"**Repository:** `{owner}/{repo}`" + (f" · **ref:** `{ctx['branch']}`" if ctx.get("branch") else ""))
-
-    st.subheader("Commits")
-    for m in ctx.get("commits_meta") or []:
-        st.markdown(f"- `{m['sha'][:7]}` — {m.get('message', '')}")
-
-    st.subheader("Raw patches (from GitHub)")
-    diff_default = ctx.get("code_context", "")
-    with st.expander("Unified diff text", expanded=True):
-        st.code(diff_default, language="diff")
-
-    review_text = st.text_area(
-        "Optional: paste an **AI-generated review** of these changes to run through the guardrail",
-        value=ctx.get("review_text", ""),
-        height=160,
-        placeholder="Leave empty to send only the diff; your backend can still analyze the patch.",
-        key="optional_ai_review",
+    st.markdown('<h3 class="cc-step-title">2 · Choose a commit</h3>', unsafe_allow_html=True)
+    st.progress(0.66, text="Step 2 of 3")
+    owner = st.session_state.owner
+    repo = st.session_state.repo
+    st.markdown(
+        f'<span class="cc-chip">Repository: {owner}/{repo}</span>'
+        + (f'<span class="cc-chip">Ref: {st.session_state.ref}</span>' if st.session_state.ref else ""),
+        unsafe_allow_html=True,
     )
-    code_context_edited = st.text_area(
-        "Diff / context sent to guardrail (editable)",
-        value=diff_default,
-        height=320,
-        key="diff_for_guardrail",
+
+    commits = st.session_state.commits or []
+    if not commits:
+        st.error("No commits loaded. Go back and fetch again.")
+        if st.button("← Back"):
+            st.session_state.step = 1
+            st.rerun()
+        st.stop()
+
+    labels = []
+    for c in commits:
+        msg = (c.get("message") or "").strip().split("\n")[0][:80]
+        labels.append(f"`{c.get('short_sha', '')}` — {msg}")
+
+    pick = st.radio("Commit", range(len(commits)), format_func=lambda i: labels[i])
+    chosen = commits[pick]
+    url = chosen.get("url") or ""
+    if url:
+        st.markdown(f"[Open on GitHub]({url})")
+
+    gemini_key = _secrets_gemini()
+    sidebar_tok = st.sidebar.text_input(
+        "GitHub token (optional)",
+        value=_secrets_github_token(),
+        type="password",
+        key="gh_step2",
     )
-    _langs = [
-        "Unspecified",
-        "Python",
-        "TypeScript / JavaScript",
-        "Go",
-        "Java / Kotlin",
-        "C# / .NET",
-        "Rust",
-        "Other",
-    ]
-    _prev = ctx.get("language") or "Unspecified"
-    language = st.selectbox(
-        "Primary language / stack (hint)",
-        _langs,
-        index=_langs.index(_prev) if _prev in _langs else 0,
-    )
+
+    if not gemini_key:
+        st.warning("Set **GEMINI_API_KEY** in `.streamlit/secrets.toml` to run the review.")
 
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Run guardrail layers", type="primary"):
-            st.session_state.review_context["review_text"] = review_text.strip()
-            st.session_state.review_context["code_context"] = code_context_edited.strip()
-            st.session_state.review_context["language"] = language
+        if st.button("Run AI review", type="primary", disabled=not gemini_key):
+            gh_tok = (sidebar_tok or "").strip()
+            sha = chosen.get("sha") or ""
+            full_msg = chosen.get("message") or ""
+            with st.spinner("Running Gemini review…"):
+                st.session_state.pipeline_result = run_pipeline(
+                    owner,
+                    repo,
+                    sha,
+                    full_msg,
+                    gemini_key,
+                    gh_tok,
+                )
             st.session_state.step = 3
-            st.session_state.technical_request_done = False
             st.rerun()
     with c2:
         if st.button("Re-fetch different repo"):
             st.session_state.step = 1
+            st.session_state.commits = []
             st.rerun()
 
+    if st.button("← Back to welcome"):
+        st.session_state.step = 0
+        st.rerun()
+
 elif st.session_state.step == 3:
-    st.header("3 · Technical layer (accuracy check)")
-    ctx = st.session_state.review_context
+    st.markdown('<h3 class="cc-step-title">3 · Review and verdict</h3>', unsafe_allow_html=True)
+    st.progress(1.0, text="Step 3 of 3")
+    result = st.session_state.pipeline_result
+    if not result:
+        st.warning("No result. Go back and run the pipeline.")
+        if st.button("← Back"):
+            st.session_state.step = 2
+            st.rerun()
+        st.stop()
 
-    form_data = {
-        "review_text": ctx.get("review_text", ""),
-        "code_context": ctx.get("code_context", ""),
-        "language": ctx.get("language", ""),
-        "repo_hint": ctx.get("repo_hint", ""),
-    }
-
-    if not st.session_state.technical_request_done:
-        try:
-            response = requests.post(LAYER_TECHNICAL, data=form_data, timeout=120)
-            st.write("HTTP status:", response.status_code)
-            if response.status_code == 200:
-                result = response.json()
-                st.session_state.technical_result = result
-                st.session_state.technical_payload = result.get("technical_report") or result.get(
-                    "report"
-                ) or str(result)
-                st.success("Technical layer completed.")
-                if st.session_state.technical_payload:
-                    st.subheader("Technical layer output")
-                    st.markdown(st.session_state.technical_payload)
-            else:
-                st.error(f"Technical layer failed: {response.status_code} — {response.text}")
-        except requests.RequestException as e:
-            st.error(f"Request error: {e}")
-            st.info(
-                f"Ensure the API is running at `{BASE_URL}` and exposes `POST /layer_technical`."
-            )
-            st.stop()
-        st.session_state.technical_request_done = True
-
+    decision = result.get("decision") or "ok"
+    if decision == "error":
+        st.error("**Error** — could not complete the pipeline (see review summary).")
     else:
-        if st.session_state.technical_payload:
-            st.subheader("Technical layer output")
-            st.markdown(st.session_state.technical_payload)
+        st.success("**Review complete** — see summary and issues below.")
 
-    if st.button("Continue to enterprise safety layer"):
-        st.session_state.step = 4
-        st.rerun()
+    review = result.get("review") or {}
+    st.subheader("Gemini review")
+    st.markdown(
+        f'<div class="cc-panel">{review.get("summary") or "—"}</div>',
+        unsafe_allow_html=True,
+    )
+    meta = review.get("_meta") or {}
+    if meta.get("latency_ms") is not None:
+        st.caption(
+            f"Model latency ~{meta.get('latency_ms')} ms · "
+            f"tokens in/out: {meta.get('input_tokens', '?')}/{meta.get('output_tokens', '?')}"
+        )
+    c_score, c_lang = st.columns(2)
+    with c_score:
+        st.metric("Score (0–100)", review.get("score", "—"))
+    with c_lang:
+        st.metric("Language", review.get("language_detected") or "—")
 
-elif st.session_state.step == 4:
-    st.header("4 · Review technical gate")
-    ctx = st.session_state.review_context
-    if ctx:
-        st.markdown(f"**Repo:** `{ctx.get('repo_hint', '—')}` · **Language hint:** {ctx.get('language', '—')}")
-        preview = (ctx.get("review_text") or "").strip()
-        if preview:
-            st.markdown("**AI review (preview)**")
-            st.code(preview[:1200] + ("…" if len(preview) > 1200 else ""), language="markdown")
-        else:
-            st.caption("No separate AI review text — guardrail used the diff only.")
-        dc = ctx.get("code_context") or ""
-        st.markdown("**Diff preview (first lines)**")
-        st.code(dc[:1500] + ("…" if len(dc) > 1500 else ""), language="diff")
-    st.divider()
-    if st.button("Run enterprise safety layer", type="primary"):
-        st.session_state.step = 5
-        st.session_state.enterprise_request_done = False
-        st.rerun()
-    if st.button("← Back to technical output"):
-        st.session_state.step = 3
-        st.rerun()
+    issues = review.get("issues") or []
+    if issues:
+        with st.expander(f"Issues ({len(issues)})", expanded=True):
+            for i, issue in enumerate(issues):
+                sev = issue.get("severity", "")
+                cat = issue.get("category", "")
+                line = issue.get("line")
+                st.markdown(f"**{i + 1}.** `{sev}` · `{cat}`" + (f" · line `{line}`" if line is not None else ""))
+                st.markdown(issue.get("description") or "")
+                st.markdown(f"*Fix:* {issue.get('suggested_fix') or '—'}")
 
-elif st.session_state.step == 5:
-    st.header("5 · Enterprise safety layer")
-    ctx = st.session_state.review_context
-    form_data = {
-        "review_text": ctx.get("review_text", ""),
-        "code_context": ctx.get("code_context", ""),
-        "language": ctx.get("language", ""),
-        "repo_hint": ctx.get("repo_hint", ""),
-        "technical_summary": st.session_state.technical_payload or "",
-    }
+    st.caption(f"Total pipeline time: ~{result.get('total_latency_ms', '?')} ms")
 
-    if not st.session_state.enterprise_request_done:
-        with st.spinner("Running policy and safety checks on the review…"):
-            try:
-                response = requests.post(LAYER_ENTERPRISE, data=form_data, timeout=120)
-                if response.status_code == 200:
-                    res = response.json()
-                    st.session_state.enterprise_result = res.get("enterprise_report") or res.get(
-                        "report"
-                    ) or str(res)
-                    st.success("Enterprise layer completed.")
-                else:
-                    st.error(f"Enterprise layer failed: {response.status_code} — {response.text}")
-            except requests.RequestException as e:
-                st.error(f"Request error: {e}")
-        st.session_state.enterprise_request_done = True
+    with st.expander("Raw JSON for judges"):
+        out = {
+            "decision": result.get("decision"),
+            "total_latency_ms": result.get("total_latency_ms"),
+            "commit": result.get("commit"),
+            "review": review,
+        }
+        st.code(json.dumps(out, indent=2, default=str), language="json")
 
-    final_enterprise = st.session_state.get("enterprise_result")
-    if final_enterprise:
-        st.subheader("Enterprise safety output")
-        st.markdown(final_enterprise)
-
-    st.divider()
-    st.subheader("CareCommit summary")
-    t_ok = bool(st.session_state.technical_payload)
-    e_ok = bool(st.session_state.get("enterprise_result"))
-    if t_ok and e_ok:
-        st.success("Both layers produced output. Ship to developers only after your own policy sign-off.")
-    elif t_ok:
-        st.warning("Technical layer only — enterprise layer missing or failed.")
-    else:
-        st.error("Incomplete guardrail run.")
-
-    if st.button("Start new verification"):
-        reset_guardrail_flow()
-        st.rerun()
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Pick another commit"):
+            st.session_state.pipeline_result = None
+            st.session_state.step = 2
+            st.rerun()
+    with c2:
+        if st.button("Start new verification"):
+            reset_flow()
+            st.rerun()
